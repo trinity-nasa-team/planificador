@@ -148,6 +148,8 @@ def _planear(p: Pedido, excluir=()):
         raise HTTPException(422, str(e)) from e
 
     T, pb, frente = plan["tramos"], plan["problema"], plan["frente"]
+    if not frente:
+        raise HTTPException(422, plan.get("aviso") or "ninguna misión cabe en el presupuesto")
     if p.prioridad == "pesos":
         i = v3.elegir(frente, {"ciencia": 0.5, "tiempo": 0.3, "riesgo": 0.2})
     else:
