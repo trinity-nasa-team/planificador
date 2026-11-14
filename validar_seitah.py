@@ -40,9 +40,10 @@ def main():
     tramos = json.load(open(os.path.join(AQUI, "data", "processed", "m20_tramos_ABC.geojson")))["features"]
     sin_v4 = {k: v for k, v in L.items() if k not in ("arena_textura", "pendiente_hirise_p95")}
     sin_p95 = {k: v for k, v in L.items() if k != "pendiente_hirise_p95"}
-    mapas = {"v3 original": v3.Mapa.desde_capas(sin_v4),
-             "v4 arena": v3.Mapa.desde_capas(sin_p95),               # elegida solo con A y C (ver docstring)
-             "v4 arena + HiRISE": v3.Mapa.desde_capas(L)}
+    p_rover = v3.parametros(v3.ROVER)       # mismos umbrales que usa el exportador (P_ROVER)
+    mapas = {"v3 original": v3.Mapa.desde_capas(sin_v4),                  # v3 tal cual: umbrales P (20°)
+             "v4 arena": v3.Mapa.desde_capas(sin_p95, p=p_rover),          # elegida solo con A y C (ver docstring)
+             "v4 arena + HiRISE": v3.Mapa.desde_capas(L, p=p_rover)}
     res, rutas = {}, {}
     for f in tramos:
         t = f["properties"]["tramo"]

@@ -24,7 +24,7 @@ Marswalk v4 (rama marswalk-v4; ver CAMBIOS_V4.md):
      del reloj, perfil por tramo cuando la misión "normal" no cabe, radio_m con meta = error.
 
 Uso típico:
-    mapa = Mapa.desde_capas(cargar())
+    mapa = Mapa.desde_capas(cargar(), p=parametros(ROVER))   # P_ROVER; para el astronauta, parametros(ASTRONAUTA)
     cands = candidatos_ciencia(mapa, L)
     plan = planear(mapa, cands, inicio, meta, ROVER, presupuesto={"h": 168, "wh": 5000})
     plan["frente"], plan["nombradas"]
@@ -97,6 +97,12 @@ ASTRONAUTA = Agente("astronauta", 2000.0, 1000.0, 0.0, 0.0, 0.5, 150.0, metaboli
 O2_L_POR_WH = 3600 / 20100   # 20.1 kJ por litro de O2 consumido (equivalente calórico) -> ~0.179 L/Wh
 
 
+def parametros(agente: "Agente") -> dict:
+    """Umbrales del mapa de costos para cada agente: P_ROVER (riesgo 15°, bloqueo 30°) para el rover y P
+    (10° y 20°) para el astronauta a pie. Uso: Mapa.desde_capas(L, p=parametros(agente))."""
+    return P if agente.metabolico else P_ROVER
+
+
 def pandolf_w(agente: Agente, v_m_s, grado_pct, eta):
     """Potencia metabólica [W] (Pandolf 1977 + corrección de bajada de Santee 2001; forma de Kim et al., IEEE EMBC
     2024, NASA JSC, NTRS 20240001423), escalada por la gravedad relativa."""
@@ -150,6 +156,7 @@ class Mapa:
     arena: np.ndarray = None      # bool: arena (textura HiRISE, IA o robot)
     incierto: np.ndarray = None   # bool: la IA duda (0.4 <= p <= 0.6) y nadie lo ha verificado -> objetivo del robot
     origen: np.ndarray = None     # uint8 por celda: 0 órbita (pendiente/geología), 1 textura HiRISE, 2 IA, 3 robot ✓
+    params: dict = None           # parámetros con que se construyó (P o P_ROVER); None = P
 
     ORIGENES = {0: "ORBIT", 1: "HIRISE_TEXTURE", 2: "AI", 3: "SCOUT_VERIFIED"}
 
@@ -188,7 +195,7 @@ class Mapa:
                  + p["w_arena"] * p_arena + p["w_incierto"] * incierto)
         costo[bloqueado] = np.inf
         return cls(costo, L["dem"].astype(np.float64), pend, riesgo, eolica | arena, bloqueado,
-                   arena, incierto, origen)
+                   arena, incierto, origen, dict(p))
 
     @property
     def forma(self):
@@ -928,7 +935,8 @@ def planear(mapa: Mapa, candidatos, inicio, meta=None, agente: Agente = ROVER, p
     pres = dict(presupuesto or {})
     if not cerrado:
         if not T.alcanzable[0, 1]:
-            raise ValueError("No hay camino seguro entre A y B (pendientes de 20° o más).")
+            pmax = (mapa.params or P)["pend_max"]
+            raise ValueError(f"No hay camino seguro entre A y B (pendientes de {pmax:g}° o más).")
         if factor is not None:
             pres.setdefault("h", factor * T.get("normal", "h")[0, 1])
             if agente.wh_por_m > 0 or agente.metabolico:
@@ -964,7 +972,7 @@ def replanear_tramo(mapa: Mapa, a, b, agente: Agente = ROVER, perfil="normal"):
     for celda in (a, b):     # el vehículo ya está en a (o llega a b): sus celdas nunca bloquean el tramo
         i, j = celda[0] - v.f0, celda[1] - v.c0
         if not np.isfinite(v.costo[i, j]):
-            v.costo[i, j] = 1.0 + P["w_pend"]
+            v.costo[i, j] = 1.0 + (mapa.params or P)["w_pend"]
     T = matriz_tramos(v, [tuple(a), tuple(b)], agente, (perfil,))
     if not T.alcanzable[0, 1]:
         return None

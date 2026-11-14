@@ -30,7 +30,8 @@ Todos los cambios mantienen la API anterior.
 ## 2. Pendiente fina
 - Donde hay HiRISE (64 % de la malla) se usa `max(pendiente CTX 20 m, p95 de la pendiente HiRISE a 5 m)`.
 - **Por qué:** la pendiente a 20 m escondía escarpes. 1.8 % de las celdas "seguras" tienen píxeles de más de 20° a 5 m.
-- **`P_ROVER`** (riesgo ≥15°, bloqueado ≥30°): los conductores de Perseverance evitan inclinaciones de más de 30°, y con la pendiente fina el umbral de 20° bloqueaba celdas por donde el rover sí pasó. `P` (10° y 20°) queda para el astronauta.
+- **`P_ROVER`** (riesgo ≥15°, bloqueado ≥30°): los conductores de Perseverance evitan inclinaciones de más de 30°, y con la pendiente fina el umbral de 20° bloqueaba celdas por donde el rover sí pasó. `P` (10° y 20°) queda para el astronauta. **Se aplica con `parametros(agente)`**: `Mapa.desde_capas(L, p=parametros(ROVER))` (lo usan el exportador y `validar_seitah.py`). Con `P` y la pendiente fina quedaría bloqueado el 4.0 % de las celdas de la ruta real de Perseverance; con `P_ROVER`, 0 %. La tabla de Séítah no cambia (los tramos no pasan por pendientes de 20–30°).
+- **El mensaje de "no hay camino" usa el umbral real del mapa** (`Mapa.params`), no un 20° fijo.
 - **`replanear_tramo` nunca bloquea los extremos del tramo:** el vehículo ya está ahí.
 
 ## 3. La IA duda, el robot verifica
@@ -47,7 +48,7 @@ Lo que verificó el robot manda sobre la IA, y la IA manda sobre la textura.
   - persona de 80 kg y traje de 104 kg (máximo recomendado para Marte, NASA ICES 2026);
   - kit de 10 kg (`kit_kg`, el control del dashboard);
   - η = 1.2 en regolito y η = 2.1 en arena.
-- **`wh` del astronauta = energía metabólica.** El O₂ sale de `wh × 0.179` L (equivalente calórico de 20.1 kJ por litro). Cada parada de estudio gasta 150 W.
+- **`wh` del astronauta = energía metabólica** (no batería; el visor debe etiquetarlo así). El O₂ sale de `wh × 0.179` L (equivalente calórico de 20.1 kJ por litro). Cada parada de estudio gasta 150 W.
 - **`costo_regreso(mapa, base)`** calcula la energía mínima y el tiempo mínimo para volver a la base desde cada celda. Es un Dijkstra inverso; tarda 0.13 s en un radio de 3 km.
 - **`regreso_mision(...)`** da, a lo largo de la misión, la energía gastada, la que falta para volver, el margen y el **punto de no retorno**.
 - **Ejemplo en Jezero** (EVA de 6 h con 1,408 Wh metabólicos y radio de 2.5 km): la misión de más ciencia gasta 692 Wh (~124 L de O₂). Con la mitad del presupuesto, el punto de no retorno cae en el paso 66 de 79.

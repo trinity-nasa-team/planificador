@@ -164,3 +164,26 @@ def test_regreso_mision_coincide_con_la_mision(mapa_real, capas):
     assert r["punto_no_retorno"] is None
     r2 = v3.regreso_mision(mapa_real, plan["tramos"], plan["problema"], m, reg, m["wh"] * 0.9)
     assert r2["punto_no_retorno"] is not None
+
+
+def test_parametros_por_agente_y_ruta_real(capas):
+    """El rover usa P_ROVER (bloqueo 30°) y el astronauta P (20°). Con la pendiente fina, P_ROVER no bloquea
+    ninguna celda de la ruta real de Perseverance; el mensaje de error usa el umbral del mapa."""
+    assert v3.parametros(v3.ROVER) is v3.P_ROVER and v3.parametros(v3.ASTRONAUTA) is v3.P
+    m = v3.Mapa.desde_capas(capas, p=v3.parametros(v3.ROVER))
+    assert m.params["pend_max"] == 30.0
+    rc = capas["ruta_rc"]
+    assert not m.bloqueado[rc[:, 0], rc[:, 1]].any()
+
+
+def test_mensaje_sin_camino_usa_umbral_del_mapa():
+    n = 12
+    L = capas_planas(n)
+    L["pendiente"] = L["pendiente"].copy()
+    L["pendiente"][:, n // 2] = 25.0          # muro de 25°: bloquea con P (20°), no con P_ROVER (30°)
+    m = v3.Mapa.desde_capas(L)
+    with pytest.raises(ValueError, match="20°"):
+        v3.planear(m, [], (5, 1), (5, n - 2), v3.ASTRONAUTA, factor=2.0)
+    m2 = v3.Mapa.desde_capas(L, p=v3.P_ROVER)
+    plan = v3.planear(m2, [], (5, 1), (5, n - 2), v3.ROVER, factor=2.0)
+    assert plan["frente"]

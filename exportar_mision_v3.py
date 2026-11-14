@@ -44,7 +44,7 @@ def main():
     a = ap.parse_args()
 
     L = cargar()
-    mapa = v3.Mapa.desde_capas(L)
+    mapa = v3.Mapa.desde_capas(L, p=v3.parametros(v3.ROVER))   # rover: riesgo 15°, bloqueo 30° (P_ROVER)
     cands = v3.candidatos_ciencia(mapa, L)
     inicio = tuple(int(v) for v in L["ruta_rc"][0])
     meta = tuple(int(v) for v in L["ruta_rc"][-1])
@@ -82,6 +82,8 @@ def main():
                         "wh": round(plan["presupuesto"]["wh"])},
         "supuestos": {"horas_por_objetivo": v3.ROVER.horas_por_objetivo, "factor": a.factor,
                       "reserva_energia": op.reserva_energia, "pesos": PESOS,
+                      "pend_riesgo": mapa.params["pend_riesgo"], "pend_max": mapa.params["pend_max"],
+                      "energia": "bateria del rover (Wh)",
                       "planificador": "v3 + Marswalk v4 (mision_v3.py, rama marswalk-v4)"},
         "frente": [resumen(m) for m in frente],
         "nombradas": plan["nombradas"],
