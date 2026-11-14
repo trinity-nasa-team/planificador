@@ -4,3 +4,8 @@ pymoo
 rasterio
 matplotlib
 jupyter
+pytest
+hypothesis
+networkx
+shapely
+pyproj

@@ -29,7 +29,11 @@ OPCIONALES = {"inercia_termica": "themis_ti_20m.tif",          # aun no disponib
               "dem_hirise_norte": "dem_hirise_N_20m.tif",      # m; NaN fuera de cobertura (solo ~9% de la zona)
               "pendiente_hirise_norte": "slope_hirise_N_20m_deg.tif",
               "mineralogia": "mineralogia_crism_20m.tif",      # uint8, clase CRISM 0-10 (0 = sin identificar), 255 = sin dato (ver mineralogia_leyenda.csv); cobertura ~66 % de la zona
-              "mineralogia_confianza": "mineralogia_confianza_20m.tif"}  # uint8: 0 = sin dato/sin identificar, 1 = media, 2 = alta
+              "mineralogia_confianza": "mineralogia_confianza_20m.tif",  # uint8: 0 = sin dato/sin identificar, 1 = media, 2 = alta
+              # Marswalk v4 (herramientas/preparar_capas_marswalk.py)
+              "arena_textura": "arena_textura_20m.tif",                # uint8 1 = arena (textura HiRISE ESP_045994)
+              "arena_cobertura": "arena_textura_cobertura_20m.tif",    # uint8 1 = hay orto HiRISE (fuera: arena no evaluada)
+              "pendiente_hirise_p95": "pend_hirise_p95_20m.tif"}       # grados, p95 de la pendiente HiRISE a 5 m; NaN fuera
 
 def cargar():
     out = {}
@@ -59,6 +63,14 @@ def xy_a_rc(x, y, res=20.0, half=10000.0):
 
 def rc_a_xy(fila, col, res=20.0, half=10000.0):
     return -half + res * (np.asarray(col) + .5), half - res * (np.asarray(fila) + .5)
+
+CRS_LOCAL = "+proj=eqc +lat_ts=18.43 +lat_0=18.43 +lon_0=77.43 +x_0=0 +y_0=0 +R=3396190 +units=m +no_defs"
+
+def xy_a_lonlat(x, y):
+    """x, y locales (m) -> lon, lat planetocéntricas (grados, esfera de Marte R = 3396190 m), para MapLibre."""
+    import pyproj
+    t = pyproj.Transformer.from_crs(CRS_LOCAL, "+proj=longlat +R=3396190 +no_defs", always_xy=True)
+    return t.transform(np.asarray(x, float), np.asarray(y, float))
 
 if __name__ == "__main__":
     L = cargar()

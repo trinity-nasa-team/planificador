@@ -14,6 +14,15 @@ Qué cambia frente al notebook planificador_v2 (sección 8) y al genético del p
   7. Reserva de energía: la misión no puede gastar el 100 % de la batería.
   8. (Opcional) ciencia con rendimiento decreciente al repetir mineral.
 
+Marswalk v4 (rama marswalk-v4; ver CAMBIOS_V4.md):
+  9. Arena a escala de rover: capa `arena_textura` (textura HiRISE) en el costo, w_arena = 10 (validado en Séítah).
+ 10. Pendiente fina: se usa max(pendiente CTX 20 m, p95 de la pendiente HiRISE a 5 m) donde hay HiRISE.
+ 11. Duda de la IA y verificación del robot: `Mapa.desde_capas(..., prob_arena=, verificadas=)` y `replanear_tramo`.
+ 12. Astronauta con modelo metabólico (Pandolf + Santee a 0.38 g, traje + kit): energía y O2 por tramo, y
+     `costo_regreso` (energía para volver al hábitat desde cada celda -> punto de no retorno).
+ 13. Correcciones de la evaluación: simplificar no cruza bloqueos, misión infactible marcada, paro sin depender
+     del reloj, perfil por tramo cuando la misión "normal" no cabe, radio_m con meta = error.
+
 Uso típico:
     mapa = Mapa.desde_capas(cargar())
     cands = candidatos_ciencia(mapa, L)
@@ -40,10 +49,17 @@ P = dict(
     pend_riesgo=10.0,  # desde aquí la celda es "de riesgo"
     pend_max=20.0,     # desde aquí la celda está bloqueada
     w_pend=1.0, w_rug=0.3, w_duna=0.5,
+    w_arena=10.0,      # arena por textura HiRISE (o prob. de la IA): elegido en los tramos A y C de Jezero, probado en B
+    w_incierto=0.0,    # castigo extra en celdas donde la IA duda (0.4 <= p <= 0.6); 0 = solo se marcan para el robot
     rug_ventana=5, duna_unidad=7,
     w_subida=8.0,      # 1 m de subida cuesta como 8 m de camino plano
     w_seguro=4.0,      # perfil "seguro": una celda de riesgo cuesta (1 + 4) veces más
 )
+# Umbrales del rover: los conductores de Perseverance evitan inclinaciones > 30° (diseño 45°; NASA/JPL, rover
+# components). Con pendiente fina (p95 HiRISE 5 m), el umbral de 20° bloquea celdas por donde Perseverance sí pasó
+# (1.6-4.4 % de su ruta real en los tramos B y C), así que para el rover: riesgo >= 15°, bloqueado >= 30°.
+# P (riesgo 10°, bloqueado 20°) queda para el astronauta (Apollo 15: tramo más empinado ~15°).
+P_ROVER = dict(P, pend_riesgo=15.0, pend_max=30.0)
 VALOR_MINERAL = {2: 1.0, 6: 1.0, 3: 1.0, 9: 1.0, 10: 1.0, 4: 0.8, 5: 0.8, 1: 0.6, 7: 0.4, 8: 0.4}
 FACTOR_CONF = {1: 0.6, 2: 1.0}
 NOMBRES = {1: "Olivine", 2: "Mg-Carbonate", 3: "Fe/Mg-Smectite", 4: "Olivine+Smectite",
@@ -55,7 +71,9 @@ VECINOS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
 @dataclass(frozen=True)
 class Agente:
-    """Quién recorre la misión: cambia velocidades, energía y tiempo de estudio."""
+    """Quién recorre la misión: cambia velocidades, energía y tiempo de estudio.
+    Si `metabolico` es True, la energía ('wh') es el gasto metabólico del astronauta (Pandolf + Santee) y no
+    se usan wh_por_m / wh_por_m_subida."""
     nombre: str
     vel_seguro_m_h: float
     vel_riesgo_m_h: float
@@ -63,10 +81,30 @@ class Agente:
     wh_por_m_subida: float
     horas_por_objetivo: float
     w_estudio: float
+    metabolico: bool = False
+    masa_kg: float = 80.0        # persona
+    traje_kg: float = 104.0      # máx. recomendado para trajes de Marte (NASA, ICES 2026, NTRS 20260005410)
+    kit_kg: float = 10.0         # herramientas y muestras (control "kit" del dashboard)
+    eta_terreno: float = 1.2     # Pandolf: 1.0 asfalto, 1.2 terracería/regolito firme
+    eta_arena: float = 2.1       # Pandolf: arena suelta
+    g_rel: float = 0.38          # gravedad de Marte / Tierra (escalado lineal: cota baja, ver CAMBIOS_V4.md)
 
 
-ROVER = Agente("rover", 100.0, 50.0, 0.25, 2.0, 4.0, 60.0)
-ASTRONAUTA = Agente("astronauta", 2000.0, 1000.0, 0.0, 0.0, 0.5, 0.0)  # a pie: ~2 km/h
+# Rover: 1.3 Wh/m ~ <200 W a <=152 m/h (NASA, componentes de Perseverance); el valor viejo (0.25) era ~5x bajo.
+ROVER = Agente("rover", 100.0, 50.0, 1.3, 2.0, 4.0, 60.0)
+# Astronauta a pie: ~2 km/h (Apollo 15: 1-2 km/h). Estudio: 150 W metabólicos por hora de trabajo en una parada.
+ASTRONAUTA = Agente("astronauta", 2000.0, 1000.0, 0.0, 0.0, 0.5, 150.0, metabolico=True)
+O2_L_POR_WH = 3600 / 20100   # 20.1 kJ por litro de O2 consumido (equivalente calórico) -> ~0.179 L/Wh
+
+
+def pandolf_w(agente: Agente, v_m_s, grado_pct, eta):
+    """Potencia metabólica [W] (Pandolf 1977 + corrección de bajada de Santee 2001; forma de Kim et al., IEEE EMBC
+    2024, NASA JSC, NTRS 20240001423), escalada por la gravedad relativa."""
+    W, Lk = agente.masa_kg, agente.traje_kg + agente.kit_kg
+    M = 1.5 * W + 2.0 * (W + Lk) * (Lk / W) ** 2 + eta * (W + Lk) * (1.5 * v_m_s ** 2 + 0.35 * v_m_s * grado_pct)
+    cf = eta * ((grado_pct * (W + Lk) * v_m_s) / 3.5 - (W + Lk) * (grado_pct + 6) ** 2 / W + 25 - v_m_s ** 2)
+    M = np.where(grado_pct < 0, M + cf, M)
+    return np.maximum(M, 1.5 * W) * agente.g_rel
 
 
 @dataclass
@@ -74,7 +112,7 @@ class OpcionesGA:
     pop_size: int = 100
     max_gen: int = 100
     paciencia: int = 25          # generaciones sin mejorar el frente antes de parar
-    timeout_s: float = 20.0
+    timeout_s: float | None = None   # None = parar solo por generaciones/paciencia (reproducible en cualquier máquina)
     sbx_eta: float = 3.0
     pm_eta: float = 5.0
     pm_prob_var: float = 0.15
@@ -96,6 +134,8 @@ def _rugosidad(pend, ventana):
     m2 = uniform_filter(pend ** 2, ventana)
     rug = np.sqrt(np.maximum(m2 - m1 ** 2, 0))
     lo, hi = np.percentile(rug, [5, 99])
+    if not hi > lo:          # pendiente uniforme: sin rugosidad (antes dividía entre 0 y el costo quedaba NaN)
+        return np.zeros_like(rug)
     return np.clip((rug - lo) / (hi - lo), 0, 1)
 
 
@@ -105,24 +145,63 @@ class Mapa:
     dem: np.ndarray
     pend: np.ndarray
     riesgo: np.ndarray      # bool: 10-20°
-    duna: np.ndarray        # bool
+    duna: np.ndarray        # bool: terreno lento (unidad eólica o arena)
     bloqueado: np.ndarray   # bool
+    arena: np.ndarray = None      # bool: arena (textura HiRISE, IA o robot)
+    incierto: np.ndarray = None   # bool: la IA duda (0.4 <= p <= 0.6) y nadie lo ha verificado -> objetivo del robot
+    origen: np.ndarray = None     # uint8 por celda: 0 órbita (pendiente/geología), 1 textura HiRISE, 2 IA, 3 robot ✓
+
+    ORIGENES = {0: "ORBIT", 1: "HIRISE_TEXTURE", 2: "AI", 3: "SCOUT_VERIFIED"}
 
     @classmethod
-    def desde_capas(cls, L, p=P):
+    def desde_capas(cls, L, p=P, prob_arena=None, verificadas=None):
+        """prob_arena: arreglo 0..1 (salida de la IA) que sustituye a la capa de textura donde no es NaN.
+        verificadas: {(fila, col): "arena" | "firme"} o arreglo int8 (1 arena, 0 firme, -1 sin verificar);
+        lo que verificó el robot manda sobre la IA y la textura."""
         pend = np.nan_to_num(L["pendiente"]).astype(np.float64)
+        if "pendiente_hirise_p95" in L:      # pendiente fina donde hay HiRISE (la de 20 m esconde escarpes)
+            pend = np.fmax(pend, np.nan_to_num(L["pendiente_hirise_p95"]))
         bloqueado = np.isnan(L["pendiente"]) | (pend >= p["pend_max"])
         riesgo = ~bloqueado & (pend >= p["pend_riesgo"])
-        duna = L["unidades_geologicas"] == p["duna_unidad"] if "unidades_geologicas" in L \
+        eolica = L["unidades_geologicas"] == p["duna_unidad"] if "unidades_geologicas" in L \
             else np.zeros(pend.shape, bool)
+        origen = np.zeros(pend.shape, np.uint8)
+        p_arena = np.zeros(pend.shape)
+        if "arena_textura" in L:
+            p_arena = L["arena_textura"].astype(np.float64)
+            origen[L["arena_textura"] > 0] = 1
+        incierto = np.zeros(pend.shape, bool)
+        if prob_arena is not None:
+            ia = np.isfinite(prob_arena)
+            p_arena = np.where(ia, prob_arena, p_arena)
+            origen[ia] = 2
+            incierto = ia & (prob_arena >= 0.4) & (prob_arena <= 0.6)
+        if verificadas is not None:
+            ver = _verificadas_a_arreglo(verificadas, pend.shape)
+            hecho = ver >= 0
+            p_arena = np.where(hecho, ver.astype(np.float64), p_arena)
+            origen[hecho] = 3
+            incierto &= ~hecho
+        arena = p_arena >= 0.5
         costo = (1 + p["w_pend"] * (pend / p["pend_ref"]) ** 2
-                 + p["w_rug"] * _rugosidad(pend, p["rug_ventana"]) + p["w_duna"] * duna)
+                 + p["w_rug"] * _rugosidad(pend, p["rug_ventana"]) + p["w_duna"] * eolica
+                 + p["w_arena"] * p_arena + p["w_incierto"] * incierto)
         costo[bloqueado] = np.inf
-        return cls(costo, L["dem"].astype(np.float64), pend, riesgo, duna, bloqueado)
+        return cls(costo, L["dem"].astype(np.float64), pend, riesgo, eolica | arena, bloqueado,
+                   arena, incierto, origen)
 
     @property
     def forma(self):
         return self.costo.shape
+
+
+def _verificadas_a_arreglo(verificadas, forma):
+    if isinstance(verificadas, np.ndarray):
+        return verificadas.astype(np.int8)
+    ver = np.full(forma, -1, np.int8)
+    for (f, c), estado in verificadas.items():
+        ver[f, c] = 1 if estado == "arena" else 0
+    return ver
 
 
 def candidatos_ciencia(mapa: Mapa, L, valor_min=0.6, area_min_celdas=25):
@@ -228,8 +307,15 @@ def _metricas_camino(v: Ventana, cam_local, agente: Agente):
     dz = np.diff(dem)
     d3 = np.hypot(RES * np.hypot(np.diff(f), np.diff(c)), dz)
     vel = np.where(lento, agente.vel_riesgo_m_h, agente.vel_seguro_m_h)
-    return dict(km=d3.sum() / 1000, h=float((d3 / vel).sum()),
-                wh=agente.wh_por_m * d3.sum() + agente.wh_por_m_subida * dz[dz > 0].sum(),
+    t_h = d3 / vel
+    if agente.metabolico:
+        arena = v.sl(v.mapa.arena)[f, c][1:] if v.mapa.arena is not None else np.zeros(len(d3), bool)
+        dh = np.maximum(RES * np.hypot(np.diff(f), np.diff(c)), 1e-6)
+        eta = np.where(arena, agente.eta_arena, agente.eta_terreno)
+        wh = float((pandolf_w(agente, vel / 3600, 100 * dz / dh, eta) * t_h).sum())
+    else:
+        wh = agente.wh_por_m * d3.sum() + agente.wh_por_m_subida * dz[dz > 0].sum()
+    return dict(km=d3.sum() / 1000, h=float(t_h.sum()), wh=wh,
                 riesgo_km=d3[riesgo].sum() / 1000, pend_max=float(pend.max()))
 
 
@@ -444,7 +530,14 @@ class Problema:
             if self.op.ordenes_extra:
                 ordenes += [self._two_opt(seq, self._matriz_busqueda("h")),
                             self._two_opt(seq, self._matriz_busqueda("riesgo_km"))]
-            hit = (ordenes, self.evaluar(ordenes[0]))
+            principal = self.evaluar(ordenes[0])
+            if self.op.perfiles_ruta and principal is not None and not self.factible(principal):
+                # Si con todo 'normal' no cabe, probar por tramo el perfil que menos gasta: a veces la ruta
+                # 'segura' es más rápida y es la única forma de que el conjunto quepa (punto ciego de v3).
+                alt = self._perfil_minimo(ordenes[0])
+                if self.factible(alt):
+                    principal = alt
+            hit = (ordenes, principal)
             self._pulido[fs] = hit
         ordenes, principal = hit
         if self.op.ordenes_extra and len(seq) >= 2:
@@ -460,6 +553,13 @@ class Problema:
                 if self.factible(m):
                     self._al_archivo(self._mixto(m))
         return principal
+
+    def _perfil_minimo(self, seq):
+        nodos = self.ruta(seq)
+        uso = (lambda p, a, b: sum(self._L[(p, k)][a][b] / v for k, v in self.pres.items() if v > 0)) if self.pres \
+            else (lambda p, a, b: self._L[(p, "h")][a][b])
+        perf = tuple(min(self.T.perfiles, key=lambda p: uso(p, a, b)) for a, b in zip(nodos[:-1], nodos[1:]))
+        return self.evaluar(seq, perf)
 
     def _al_archivo(self, m):
         if not self.factible(m) or (self.cerrado and not m["seq"]):
@@ -676,8 +776,10 @@ def optimizar(pb: Problema):
 
     alg = NSGA2(pop_size=op.pop_size, sampling=X, crossover=SBX(prob=0.9, eta=op.sbx_eta),
                 mutation=PM(eta=op.pm_eta, prob_var=op.pm_prob_var), eliminate_duplicates=True)
-    term = TerminationCollection(MaximumGenerationTermination(op.max_gen),
-                                 TimeBasedTermination(max_time=op.timeout_s))
+    terms = [MaximumGenerationTermination(op.max_gen)]
+    if op.timeout_s is not None:          # salvaguarda opcional; con tiempo límite el resultado depende de la máquina
+        terms.append(TimeBasedTermination(max_time=op.timeout_s))
+    term = TerminationCollection(*terms)
     res = minimize(_P(), alg, term, seed=op.semilla, verbose=False, callback=_Paciencia())
     pb.generaciones = res.algorithm.n_gen
     if op.busqueda_local:
@@ -729,9 +831,39 @@ def camino_mision(T: Tramos, pb: Problema, m):
     nodos = pb.ruta(m["seq"])
     camino = []
     for p, (a, b) in zip(m["perfiles"], zip(nodos[:-1], nodos[1:])):
-        c = T.caminos[(p, a, b)]
+        c = [T.nodos[a]] if a == b else T.caminos[(p, a, b)]
         camino += c if not camino else c[1:]
     return camino
+
+
+def _celdas_segmento(p0, p1):
+    """Todas las celdas que toca el segmento entre dos centros de celda (supercover exacto) y la fracción del
+    segmento dentro de cada una. Si el segmento pasa justo por una esquina, se incluyen las dos celdas
+    ortogonales (misma regla que las diagonales del grafo)."""
+    p0, p1 = np.asarray(p0, float), np.asarray(p1, float)
+    d = p1 - p0
+    ts = [0.0, 1.0]
+    for k in (0, 1):
+        if d[k] != 0:
+            lo, hi = sorted((p0[k], p1[k]))
+            for b in np.arange(math.floor(lo - 0.5) + 0.5, hi + 0.5, 1.0):
+                t = (b - p0[k]) / d[k]
+                if 0 < t < 1:
+                    ts.append(t)
+    ts = np.unique(np.round(ts, 12))
+    celdas, peso = [], []
+    for t0, t1 in zip(ts[:-1], ts[1:]):
+        mid = p0 + d * (t0 + t1) / 2
+        celdas.append(np.floor(mid + 0.5).astype(int))
+        peso.append(t1 - t0)
+    for t in ts[1:-1]:                     # cruces por esquina exacta: las dos celdas ortogonales
+        q = p0 + d * t
+        frac = np.abs(q - np.floor(q) - 0.5)
+        if (frac < 1e-9).all():
+            antes, despues = np.floor(p0 + d * (t - 1e-6) + 0.5), np.floor(p0 + d * (t + 1e-6) + 0.5)
+            celdas += [np.array([antes[0], despues[1]], int), np.array([despues[0], antes[1]], int)]
+            peso += [0.0, 0.0]
+    return np.array(celdas), np.array(peso)
 
 
 def simplificar(mapa: Mapa, camino, tolerancia=0.03, max_salto=60):
@@ -743,14 +875,11 @@ def simplificar(mapa: Mapa, camino, tolerancia=0.03, max_salto=60):
     acum = np.concatenate([[0], np.cumsum(RES * np.hypot(*np.diff(a, axis=0).T) * paso / 2)])
 
     def recta(i, j):
-        n = int(max(abs(a[j] - a[i]))) * 4 + 2
-        t = np.linspace(0, 1, n)
-        f = np.rint(a[i, 0] + (a[j, 0] - a[i, 0]) * t).astype(int)
-        c = np.rint(a[i, 1] + (a[j, 1] - a[i, 1]) * t).astype(int)
-        v = mapa.costo[f, c]
+        celdas, peso = _celdas_segmento(a[i], a[j])
+        v = mapa.costo[celdas[:, 0], celdas[:, 1]]
         if not np.isfinite(v).all():
             return np.inf
-        return v.mean() * RES * math.hypot(*(a[j] - a[i]))
+        return float((v * peso).sum()) * RES * math.hypot(*(a[j] - a[i]))
 
     idx, i = [0], 0
     while i < len(a) - 1:
@@ -774,6 +903,8 @@ def planear(mapa: Mapa, candidatos, inicio, meta=None, agente: Agente = ROVER, p
     op = op or OpcionesGA()
     t0 = time.perf_counter()
     cerrado = meta is None
+    if not cerrado and radio_m is not None:
+        raise ValueError("radio_m solo aplica a misiones de ida y vuelta (meta=None).")
     usar = []
     for c in candidatos:
         f, k = c["celda"]
@@ -800,7 +931,7 @@ def planear(mapa: Mapa, candidatos, inicio, meta=None, agente: Agente = ROVER, p
             raise ValueError("No hay camino seguro entre A y B (pendientes de 20° o más).")
         if factor is not None:
             pres.setdefault("h", factor * T.get("normal", "h")[0, 1])
-            if agente.wh_por_m > 0:
+            if agente.wh_por_m > 0 or agente.metabolico:
                 pres.setdefault("wh", factor * T.get("normal", "wh")[0, 1])
     primer = 1 if cerrado else 2
     # candidatos sin ida y vuelta posible no valen nada
@@ -810,11 +941,110 @@ def planear(mapa: Mapa, candidatos, inicio, meta=None, agente: Agente = ROVER, p
     pb.generaciones = 0
     optimizar(pb)
     frente = _recortar(pb.archivo, op.max_frente)
+    aviso = None
     if not frente and not cerrado:   # nada cabe: la ruta directa es la única misión
-        frente = [pb.evaluar(())]
+        directa = pb.evaluar(())
+        if not pb.factible(directa):
+            directa = dict(directa, factible=False)
+            aviso = ("La ruta directa NO cabe en el presupuesto (p. ej. por la reserva de energía): "
+                     f"usa {', '.join(f'{k} {directa[k]:.1f}/{v:.1f}' for k, v in pb.pres.items())}.")
+        frente = [directa]
     frente.sort(key=lambda m: (-m["ciencia"], m["h"], m["riesgo_km"]))
     nombradas = nombrar(frente) if frente else {}
     return {"frente": frente, "nombradas": nombradas, "tramos": T, "problema": pb,
             "candidatos": usar, "presupuesto": pb.pres, "nodos": nodos,
             "seg_tramos": round(t_tramos, 2), "seg_total": round(time.perf_counter() - t0, 2),
-            "generaciones": pb.generaciones}
+            "generaciones": pb.generaciones, "aviso": aviso}
+
+
+# ---------------------------------------------------------------- Marswalk: replaneo, regreso y punto de no retorno
+def replanear_tramo(mapa: Mapa, a, b, agente: Agente = ROVER, perfil="normal"):
+    """Ruta de un solo tramo a -> b (lo que se recalcula en vivo cuando el robot marca una celda). ~0.1 s."""
+    v = Ventana.alrededor(mapa, [a, b])
+    for celda in (a, b):     # el vehículo ya está en a (o llega a b): sus celdas nunca bloquean el tramo
+        i, j = celda[0] - v.f0, celda[1] - v.c0
+        if not np.isfinite(v.costo[i, j]):
+            v.costo[i, j] = 1.0 + P["w_pend"]
+    T = matriz_tramos(v, [tuple(a), tuple(b)], agente, (perfil,))
+    if not T.alcanzable[0, 1]:
+        return None
+    return {"camino": T.caminos[(perfil, 0, 1)], **{k: float(T.get(perfil, k)[0, 1]) for k in METRICAS}}
+
+
+def costo_regreso(mapa: Mapa, base, agente: Agente = ASTRONAUTA, radio_m=5000.0):
+    """Energía metabólica mínima [Wh] y tiempo mínimo [h] para volver a `base` desde cada celda, con el mismo
+    grafo de rutas: Dijkstra desde la base sobre el grafo invertido, con pesos Pandolf + Santee (energía) y
+    distancia / velocidad (tiempo).
+    Devuelve dict(wh, h, o2_L) como arreglos del tamaño del mapa (NaN = inalcanzable o fuera del radio)."""
+    v = Ventana.alrededor(mapa, [base], margen_m=radio_m, centro=base, radio_m=radio_m)
+    n, m = v.costo.shape
+    libre = np.isfinite(v.costo)
+    dem, arena = v.sl(mapa.dem), v.sl(mapa.arena) if mapa.arena is not None else np.zeros((n, m), bool)
+    lento = v.sl(mapa.riesgo | mapa.duna)
+    filas, cols = np.meshgrid(np.arange(n), np.arange(m), indexing="ij")
+    o, d, w_wh, w_h = [], [], [], []
+    for df, dc in VECINOS:
+        sl_a = (slice(max(0, -df), min(n, n - df)), slice(max(0, -dc), min(m, m - dc)))
+        fa, ca = filas[sl_a], cols[sl_a]
+        fb, cb = fa + df, ca + dc
+        ok = libre[fa, ca] & libre[fb, cb]
+        if df and dc:
+            ok &= libre[fa, cb] & libre[fb, ca]
+        fa, ca, fb, cb = fa[ok], ca[ok], fb[ok], cb[ok]
+        dh = RES * math.hypot(df, dc)
+        dz = dem[fb, cb] - dem[fa, ca]
+        vel = np.where(lento[fb, cb], agente.vel_riesgo_m_h, agente.vel_seguro_m_h)
+        t_h = np.hypot(dh, dz) / vel
+        eta = np.where(arena[fb, cb], agente.eta_arena, agente.eta_terreno)
+        w_wh.append(pandolf_w(agente, vel / 3600, 100 * dz / dh, eta) * t_h)
+        w_h.append(t_h)
+        o.append(fa * m + ca)
+        d.append(fb * m + cb)
+    o, d = np.concatenate(o), np.concatenate(d)
+    i0 = v.local(base)
+    salida = {}
+    for clave, w in (("wh", np.concatenate(w_wh)), ("h", np.concatenate(w_h))):
+        g = csr_matrix((w, (d, o)), shape=(n * m, n * m))      # aristas invertidas: Dijkstra desde la base
+        dist = dijkstra(g, directed=True, indices=i0)
+        arr = np.full(mapa.forma, np.nan)
+        v.sl(arr)[...] = np.where(np.isfinite(dist), dist, np.nan).reshape(n, m)
+        salida[clave] = arr                                     # 'h' = tiempo mínimo de regreso (su propia ruta)
+    salida["o2_L"] = salida["wh"] * O2_L_POR_WH
+    return salida
+
+
+def perfil_regreso(mapa: Mapa, camino, regreso, agente: Agente, presupuesto_wh, reserva=0.10, paradas=()):
+    """A lo largo de un camino (celdas): energía gastada, energía para volver al hábitat desde ahí y margen.
+    El punto de no retorno es el primer punto donde gastado + regreso > presupuesto x (1 - reserva).
+    Supone que la caminata empezó en la base. `paradas`: índices del camino donde se hace una parada de estudio
+    (se suma horas_por_objetivo x w_estudio desde ahí). Devuelve dict de listas + índice del punto de no retorno."""
+    a = np.asarray(camino)
+    dz = np.diff(mapa.dem[a[:, 0], a[:, 1]])
+    dh = RES * np.hypot(*np.diff(a, axis=0).T)
+    lento = (mapa.riesgo | mapa.duna)[a[1:, 0], a[1:, 1]]
+    vel = np.where(lento, agente.vel_riesgo_m_h, agente.vel_seguro_m_h)
+    t_h = np.hypot(dh, dz) / vel
+    arena = mapa.arena[a[1:, 0], a[1:, 1]] if mapa.arena is not None else np.zeros(len(dh), bool)
+    eta = np.where(arena, agente.eta_arena, agente.eta_terreno)
+    gastado = np.r_[0.0, np.cumsum(pandolf_w(agente, vel / 3600, 100 * dz / np.maximum(dh, 1e-6), eta) * t_h)]
+    for i in paradas:
+        gastado[i:] += agente.horas_por_objetivo * agente.w_estudio
+    volver = regreso["wh"][a[:, 0], a[:, 1]]
+    tope = presupuesto_wh * (1 - reserva)
+    margen = tope - (gastado + volver)
+    fuera = np.nonzero(~(margen >= 0))[0]
+    return {"gastado_wh": gastado.tolist(), "regreso_wh": volver.tolist(), "margen_wh": margen.tolist(),
+            "o2_gastado_L": (gastado * O2_L_POR_WH).tolist(), "punto_no_retorno": int(fuera[0]) if len(fuera) else None}
+
+
+def regreso_mision(mapa: Mapa, T: Tramos, pb: Problema, m, regreso, presupuesto_wh, reserva=0.10):
+    """perfil_regreso de una misión del frente, con la energía de cada parada de estudio en su lugar."""
+    nodos = pb.ruta(m["seq"])
+    camino, paradas = [], []
+    for k, (p, (a, b)) in enumerate(zip(m["perfiles"], zip(nodos[:-1], nodos[1:]))):
+        c = [T.nodos[a]] if a == b else T.caminos[(p, a, b)]
+        camino += c if not camino else c[1:]
+        if k < len(m["seq"]):
+            paradas.append(len(camino) - 1)
+    return dict(perfil_regreso(mapa, camino, regreso, pb.agente, presupuesto_wh, reserva, paradas),
+                camino=camino, paradas=paradas)

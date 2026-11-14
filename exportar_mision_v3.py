@@ -16,7 +16,7 @@ import numpy as np
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, AQUI)
-from proto1_capas import cargar, rc_a_xy  # noqa: E402
+from proto1_capas import cargar, rc_a_xy, xy_a_lonlat  # noqa: E402
 
 import mision_v3 as v3  # noqa: E402
 
@@ -27,6 +27,12 @@ def a_xy(celdas):
     a = np.asarray(celdas)
     x, y = rc_a_xy(a[:, 0], a[:, 1])
     return np.round(np.c_[x, y], 1).tolist()
+
+
+def a_lonlat(xy):
+    a = np.asarray(xy, float)
+    lon, lat = xy_a_lonlat(a[:, 0], a[:, 1])
+    return np.round(np.c_[lon, lat], 6).tolist()
 
 
 def main():
@@ -76,10 +82,18 @@ def main():
                         "wh": round(plan["presupuesto"]["wh"])},
         "supuestos": {"horas_por_objetivo": v3.ROVER.horas_por_objetivo, "factor": a.factor,
                       "reserva_energia": op.reserva_energia, "pesos": PESOS,
-                      "planificador": "v3 (mision_v3.py)"},
+                      "planificador": "v3 + Marswalk v4 (mision_v3.py, rama marswalk-v4)"},
         "frente": [resumen(m) for m in frente],
         "nombradas": plan["nombradas"],
     }
+    salida["lonlat"] = {"crs": "lon/lat planetocéntricas, esfera de Marte R=3396190 m",
+                        "plan": a_lonlat(salida["plan"]), "waypoints": a_lonlat(salida["waypoints"]),
+                        "real": a_lonlat(salida["real"]), "inicio": a_lonlat([salida["inicio"]])[0],
+                        "meta": a_lonlat([salida["meta"]])[0],
+                        "objetivos": a_lonlat([[o["x"], o["y"]] for o in salida["objetivos"]]) if salida["objetivos"] else []}
+    salida["aviso"] = plan.get("aviso")
+    if plan.get("aviso"):
+        print("AVISO:", plan["aviso"])
     os.makedirs(os.path.dirname(os.path.abspath(a.salida)), exist_ok=True)
     with open(a.salida, "w", encoding="utf-8") as f:
         json.dump(salida, f, ensure_ascii=False)
