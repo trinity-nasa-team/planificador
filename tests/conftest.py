@@ -96,7 +96,7 @@ def metricas_ref(mapa, cam, ag):
             W, Lk = ag.masa_kg, ag.traje_kg + ag.kit_kg
             M = 1.5 * W + 2.0 * (W + Lk) * (Lk / W) ** 2 + eta * (W + Lk) * (1.5 * v * v + 0.35 * v * G)
             if G < 0:
-                M += eta * ((G * (W + Lk) * v) / 3.5 - (W + Lk) * (G + 6) ** 2 / W + 25 - v * v)
+                M -= eta * ((G * (W + Lk) * v) / 3.5 - (W + Lk) * (G + 6) ** 2 / W + 25 - v * v)   # MP - CF
             wh += max(M, 1.5 * W) * ag.g_rel * d3 / (v * 3600)
         else:
             wh += ag.wh_por_m * d3 + ag.wh_por_m_subida * max(dz, 0)

@@ -51,7 +51,8 @@ Lo que verificó el robot manda sobre la IA, y la IA manda sobre la textura.
 - **`wh` del astronauta = energía metabólica** (no batería; el visor debe etiquetarlo así). El O₂ sale de `wh × 0.179` L (equivalente calórico de 20.1 kJ por litro). Cada parada de estudio gasta 150 W.
 - **`costo_regreso(mapa, base)`** calcula la energía mínima y el tiempo mínimo para volver a la base desde cada celda. Es un Dijkstra inverso; tarda 0.13 s en un radio de 3 km.
 - **`regreso_mision(...)`** da, a lo largo de la misión, la energía gastada, la que falta para volver, el margen y el **punto de no retorno**.
-- **Ejemplo en Jezero** (EVA de 6 h con 1,408 Wh metabólicos y radio de 2.5 km): la misión de más ciencia gasta 692 Wh (~124 L de O₂). Con la mitad del presupuesto, el punto de no retorno cae en el paso 66 de 79.
+- **Ejemplo en Jezero** (EVA de 6 h con 1,408 Wh metabólicos y radio de 2.5 km): la misión de más ciencia gasta 776 Wh (~139 L de O₂). Con la mitad del presupuesto, el punto de no retorno cae en el paso 39 de 79.
+- **Signo de Santee (corregido 14 nov):** en bajada se usa `M = MP − CF`, como la ecuación 1 de Kim et al. 2024 (NTRS 20240001423). La primera versión lo sumaba y subestimaba el costo de las bajadas fuertes.
 - **Límites:**
   - el escalado a 0.38 g es lineal (es una cota baja);
   - no modela la caminata en pareja ni la termorregulación;
@@ -72,7 +73,7 @@ Lo que verificó el robot manda sobre la IA, y la IA manda sobre la textura.
 ## 6. Otros cambios
 - **Exportador:** salida también en **lon/lat** (`salida["lonlat"]`, esfera de Marte) para MapLibre, más el aviso de misión infactible.
 - **`herramientas/preparar_capas_marswalk.py`:** regenera las capas nuevas desde los productos públicos de USGS y JPL (~1 min).
-- **`tests/`:** 59 pruebas (pytest + hypothesis + networkx). Correr con `cd tests && python -m pytest -q`.
+- **`tests/`:** 61 pruebas (pytest + hypothesis + networkx). Correr con `cd tests && python -m pytest -q`.
 
 ## Pendiente (no incluido)
 - Capas de NE Syrtis y escenarios de EVA-1 y EVA-2; clase de serpentina en la ciencia.
