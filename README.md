@@ -9,7 +9,8 @@ Planificador de misiones NSGA-II (Jezero) listo para correr por sí solo.
 - `salida/rutas_v3.json` – ejemplo ya generado (factor 2.0, semilla 42), con coordenadas locales y lon/lat
 - `validar_seitah.py` – compara las rutas con el recorrido real de Perseverance (tramos A, B, C)
 - `herramientas/preparar_capas_marswalk.py` – regenera las capas de arena y pendiente HiRISE
-- `tests/` – 61 pruebas automáticas
+- `eva_pareja.py` – EVA en pareja (oxígeno de cada uno y rescate si uno se lesiona) y radio con el hábitat
+- `tests/` – 70 pruebas automáticas
 - **Cambios de Marswalk v4: ver `CAMBIOS_V4.md`** (arena de Séítah, pendiente HiRISE, IA + robot, astronauta con O₂ y punto de no retorno, correcciones)
 
 ## Uso
@@ -18,8 +19,33 @@ pip install -r requirements.txt     # Python 3.10+ (probado en 3.12)
 python exportar_mision_v3.py --factor 2.0 --semilla 42
 jupyter notebook demo_planificador_v3.ipynb      # abrir desde esta carpeta
 python validar_seitah.py                          # tramo B de Séítah: v3 498 m -> v4 125 m de la ruta real
-cd tests && python -m pytest -q                   # 61 pruebas
+cd tests && python -m pytest -q                   # 70 pruebas
 ```
+
+## EVA en pareja y radio (`eva_pareja.py`)
+En la NASA nadie sale solo: la EVA es de dos astronautas. Sobre una EVA ya trazada (hábitat → paradas → hábitat):
+
+- **Oxígeno de cada uno**, con su propio peso y tanque (mismo modelo metabólico de `mision_v3`). Punto de no
+  retorno = primer punto desde el que a alguno ya no le alcanza para volver guardando 10 % de reserva.
+- **Rescate (compañero lesionado):** en cada punto se supone que uno se lesiona y el otro lo ayuda a volver; se
+  prueban los dos papeles. Ambos deben llegar con O₂ (aquí sí se puede usar la reserva) y dentro de las 8 h del traje.
+  `rescate.sin_rescate` = primer punto desde el que ya no alcanzan → **la misión debe cambiarse por una más segura**.
+  Supuestos propios (no son datos de la NASA): con un lesionado se camina a la mitad de la velocidad y quien ayuda
+  carga 30 kg más (`VEL_ASISTIDA`, `CARGA_AYUDA_KG`).
+- **Radio:** línea de vista entre el mástil del hábitat (10 m) y la antena del traje (2 m) sobre el relieve y con
+  la curvatura de Marte (`cobertura_radio`). `con_radio` encarece las celdas sin señal para que las rutas las eviten;
+  `senal_en_camino` da el % de la ruta sin señal y el tramo más largo sin contacto.
+
+```python
+import mision_v3 as v3, eva_pareja as ep
+mapa = v3.Mapa.desde_capas(L, p=v3.parametros(v3.ASTRONAUTA))
+r = ep.perfil_pareja(mapa, camino, paradas, habitat, [{"masa_kg": 80, "o2_L": 380}, {"masa_kg": 70, "o2_L": 380}])
+r["rescate"]["sin_rescate"], r["rescate"]["metros_hasta_sin_rescate"], r["personas"]
+cob = ep.cobertura_radio(mapa, habitat, radio_m=3000); ep.senal_en_camino(camino, cob, mapa)
+```
+Ejemplo real (Jezero, EVA de 4.1 km con dos paradas): rescate posible en todo el recorrido. Con 7.8 km: desde los
+2.2 km ya no hay rescate posible y el de 70 kg volvería con solo 3 % del tanque. Tiempos: pareja 1–3 s, radio < 0.3 s.
+No cambia `mision_v3.py`.
 
 ## API local (la Raspberry Pi pide las rutas a la laptop)
 
